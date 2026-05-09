@@ -66,6 +66,10 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 
+# 导入并注册设置蓝图
+from settings import settings_bp, init_settings
+app.register_blueprint(settings_bp)
+
 phaseBak = "thinking"
 # 工具函数
 class utils:
@@ -647,10 +651,14 @@ class utils:
 	class response:
 		@staticmethod
 		def parse(stream):
+			line_count = 0
 			for line in stream.iter_lines():
 				if not line or not line.startswith(b"data: "): continue
+				line_count += 1
 				try: data = json.loads(line[6:].decode("utf-8", "ignore"))
 				except: continue
+				if line_count <= 3:
+					log.info("SSE 第 %d 行: %s", line_count, json.dumps(data, ensure_ascii=False)[:300])
 				yield data
 
 		@staticmethod
@@ -675,7 +683,9 @@ class utils:
 			
 			phase = data.get("phase", "other")
 			content = data.get("delta_content") or data.get("edit_content") or ""
-			if not content: return None
+			if not content:
+				log.info("format 返回 None - phase: %s, keys: %s", phase, list(data.keys()))
+				return None
 			contentBak = content
 			global phaseBak
 
@@ -828,8 +838,12 @@ def OpenAI_Compatible():
 			log.info("  提示词: %d tokens", prompt_tokens)
 			def generate_stream():
 				completion_parts = []  # 收集 content 和 reasoning_content
+				chunk_count = 0
 				for raw_chunk in utils.response.parse(response):
+					chunk_count += 1
+					log.info("原始数据 #%d: %s", chunk_count, json.dumps(raw_chunk, ensure_ascii=False)[:500])
 					delta = utils.response.format(raw_chunk, "OpenAI")
+					log.info("格式化结果 #%d: %s", chunk_count, delta)
 					if not delta:
 						continue
 
@@ -888,6 +902,8 @@ def OpenAI_Compatible():
 				yield "data: [DONE]\n\n"
 				log.info("OpenAI 流式响应完成:")
 				log.info("  模型: %s", model)
+				log.info("  总块数: %d", chunk_count)
+				log.info("  有效块: %d", len(completion_parts))
 				log.info("  输出: %d tokens", completion_tokens if include_usage else utils.response.count("".join(completion_parts)))
 
 			return Response(generate_stream(), mimetype="text/event-stream")
@@ -1246,11 +1262,16 @@ if __name__ == "__main__":
 	log.info("请稍后，正在检查网络……")
 	models = utils.request.models()
 	cookies = utils.request.cookies()
+	
+	# 初始化设置管理器
+	settings_manager = init_settings(cfg)
+	
 	log.info("---------------------------------------------------------------------")
 	log.info(f"Base           {cfg.source.protocol}//{cfg.source.host}")
 	log.info("Models         /v1/models")
 	log.info("OpenAI         /v1/chat/completions")
 	log.info("Anthropic      /v1/messages")
+	log.info("Settings       /api/settings")
 	log.info("---------------------------------------------------------------------")
 	log.info("服务端口：%s", cfg.api.port)
 	log.info("请求饼干：%s", cfg.headers["Cookie"]) if cookies else None
