@@ -70,6 +70,10 @@ app.config["JSON_AS_ASCII"] = False
 from settings import settings_bp, init_settings
 app.register_blueprint(settings_bp)
 
+# 导入并注册账号管理蓝图
+from accounts import accounts_bp, init_accounts
+app.register_blueprint(accounts_bp)
+
 phaseBak = "thinking"
 # 工具函数
 class utils:
@@ -1266,12 +1270,16 @@ if __name__ == "__main__":
 	# 初始化设置管理器
 	settings_manager = init_settings(cfg)
 	
+	# 初始化账号管理器
+	accounts_manager = init_accounts()
+	
 	log.info("---------------------------------------------------------------------")
 	log.info(f"Base           {cfg.source.protocol}//{cfg.source.host}")
 	log.info("Models         /v1/models")
 	log.info("OpenAI         /v1/chat/completions")
 	log.info("Anthropic      /v1/messages")
 	log.info("Settings       /api/settings")
+	log.info("Accounts       /api/accounts")
 	log.info("---------------------------------------------------------------------")
 	log.info("服务端口：%s", cfg.api.port)
 	log.info("请求饼干：%s", cfg.headers["Cookie"]) if cookies else None
