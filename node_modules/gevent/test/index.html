@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>GEvent Test</title>
+    <script src='../index.js'></script>
+    <script>
+        var uid = null;
+
+        var bind = function() {
+            uid = gEvent.on('hello', function(name) {
+                alert('hello, ' + name);
+            });
+
+            gEvent.on('hello', function(name) {
+                alert('byebye, ' + name);
+            });
+        };
+
+        var unbind = function() {
+            gEvent.off('hello');
+        };
+
+        var unbindOne = function() {
+            gEvent.offOne(uid);
+        };
+
+        var fire = function() {
+            gEvent.emit('hello', 'github');
+        };
+
+        var clr = function() {
+            gEvent.clear();
+        };
+
+        bind();
+    </script>
+</head>
+<body>
+    <button onclick='fire()'>Fire</button>
+    <button onclick='clr()'>Clear</button>
+    <button onclick='bind()'>Bind</button>
+    <button onclick='unbind()'>Unbind</button>
+    <button onclick='unbindOne()'>Unbind One</button>
+</body>
+</html>

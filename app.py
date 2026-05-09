@@ -123,7 +123,7 @@ class utils:
 			log.debug("  headers: %s", json.dumps(headers))
 			log.debug("  data: %s", json.dumps(data))
 
-			url = f"{cfg.source.protocol}//{cfg.source.host}/api/chat/completions"
+			url = f"{cfg.source.protocol}//{cfg.source.host}/api/v2/chat/completions"
 			if params:
 				query_string = urllib.parse.urlencode(params)
 				url = f"{url}?{query_string}"
@@ -655,8 +655,24 @@ class utils:
 
 		@staticmethod
 		def format(data, type = "OpenAI"):
+			if not isinstance(data, dict):
+				return None
+			
 			data = data.get("data", "")
 			if not data: return None
+			
+			# 如果 data 是字符串，尝试解析 JSON
+			if isinstance(data, str):
+				try:
+					data = json.loads(data)
+				except (json.JSONDecodeError, TypeError):
+					# 如果无法解析，返回 None
+					return None
+			
+			# 现在 data 应该是字典
+			if not isinstance(data, dict):
+				return None
+			
 			phase = data.get("phase", "other")
 			content = data.get("delta_content") or data.get("edit_content") or ""
 			if not content: return None
@@ -1222,5 +1238,10 @@ if __name__ == "__main__":
 	if cfg.api.debug:
 		app.run(host="0.0.0.0", port=cfg.api.port, threaded=True, debug=True)
 	else:
-		from gevent import pywsgi
-		pywsgi.WSGIServer(('0.0.0.0', cfg.api.port), app).serve_forever()
+		import sys
+		if sys.version_info >= (3, 14):
+			from waitress import serve
+			serve(app, host='0.0.0.0', port=cfg.api.port)
+		else:
+			from gevent import pywsgi
+			pywsgi.WSGIServer(('0.0.0.0', cfg.api.port), app).serve_forever()

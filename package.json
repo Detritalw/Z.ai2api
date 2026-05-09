@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "gevent": "^1.0.4"
+  }
+}
