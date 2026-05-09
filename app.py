@@ -790,8 +790,10 @@ def OpenAI_Compatible():
 			return utils.request.response(make_response())
 
 		odata = request.get_json(force=True, silent=True) or {}
-		# log.debug("收到请求:")
-		# log.debug("  data: %s", json.dumps(odata))
+		log.info("收到 OpenAI 兼容请求:")
+		log.info("  模型: %s", odata.get("model", cfg.model.default))
+		log.info("  流式: %s", odata.get("stream", False))
+		log.info("  消息数: %d", len(odata.get("messages", [])))
 		id = utils.request.id("chat")
 		stream = odata.get("stream", False)
 		include_usage = odata.get("stream_options", {}).get("include_usage", True)
@@ -821,6 +823,9 @@ def OpenAI_Compatible():
 			})), response.status_code
 
 		if stream:
+			log.info("开始流式响应:")
+			log.info("  模型: %s", model)
+			log.info("  提示词: %d tokens", prompt_tokens)
 			def generate_stream():
 				completion_parts = []  # 收集 content 和 reasoning_content
 				for raw_chunk in utils.response.parse(response):
@@ -881,6 +886,9 @@ def OpenAI_Compatible():
 					})}\n\n"
 
 				yield "data: [DONE]\n\n"
+				log.info("OpenAI 流式响应完成:")
+				log.info("  模型: %s", model)
+				log.info("  输出: %d tokens", completion_tokens if include_usage else utils.response.count("".join(completion_parts)))
 
 			return Response(generate_stream(), mimetype="text/event-stream")
 
@@ -932,6 +940,11 @@ def OpenAI_Compatible():
 					"total_tokens": prompt_tokens + completion_tokens
 				}
 
+			log.info("OpenAI 兼容请求完成:")
+			log.info("  模型: %s", model)
+			log.info("  提示词: %d tokens", prompt_tokens)
+			log.info("  输出: %d tokens", completion_tokens)
+			log.info("  总计: %d tokens", prompt_tokens + completion_tokens)
 			return utils.request.response(jsonify(result))
 
 	except Exception as e:
@@ -948,8 +961,10 @@ def Anthropic_Compatible():
 			return utils.request.response(make_response())
 
 		odata = request.get_json(force=True, silent=True) or {}
-		log.debug("收到请求:")
-		log.debug("  data: %s", json.dumps(odata))
+		log.info("收到 Anthropic 兼容请求:")
+		log.info("  模型: %s", odata.get("model", cfg.model.default))
+		log.info("  流式: %s", odata.get("stream", False))
+		log.info("  消息数: %d", len(odata.get("messages", [])))
 		id = utils.request.id("chat")
 		stream = odata.get("stream", False)
 
@@ -976,6 +991,9 @@ def Anthropic_Compatible():
 			})), response.status_code
 
 		if stream:
+			log.info("开始 Anthropic 流式响应:")
+			log.info("  模型: %s", model)
+			log.info("  提示词: %d tokens", prompt_tokens)
 			def generate_stream():
 				text_parts = []
 				tool_call_parts = []
@@ -1120,6 +1138,9 @@ def Anthropic_Compatible():
 				yield "event: message_stop\n"
 				yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
 				# yield "data: [DONE]\n\n"
+				log.info("Anthropic 流式响应完成:")
+				log.info("  模型: %s", model)
+				log.info("  输出: %d tokens", completion_tokens)
 
 			return Response(generate_stream(), mimetype="text/event-stream")
 
@@ -1181,6 +1202,11 @@ def Anthropic_Compatible():
 			completion_str = "".join(text_parts)
 			completion_tokens = utils.response.count(completion_str)
 
+			log.info("Anthropic 兼容请求完成:")
+			log.info("  模型: %s", model)
+			log.info("  提示词: %d tokens", prompt_tokens)
+			log.info("  输出: %d tokens", completion_tokens)
+			log.info("  总计: %d tokens", prompt_tokens + completion_tokens)
 			return utils.request.response(jsonify({
 				"id": utils.request.id(),
 				"type": "message",
