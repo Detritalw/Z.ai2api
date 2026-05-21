@@ -443,6 +443,326 @@ class AccountManager:
         
         self._save()
         return {"success": True, "results": results}
+    
+    def search_accounts(self, query: str = "", status: str = None, label: str = None, 
+                       is_active: bool = None, sort_by: str = "added_at", 
+                       sort_order: str = "desc", page: int = 1, 
+                       page_size: int = 20) -> Dict:
+        """搜索和过滤账号"""
+        with _accounts_lock:
+            accounts = _accounts_data["accounts"].copy()
+        
+        # 应用过滤条件
+        filtered = []
+        for acc in accounts:
+            # 文本搜索（用户名、标签、用户ID）
+            if query:
+                query_lower = query.lower()
+                match = False
+                if query_lower in (acc.get("user_name") or "").lower():
+                    match = True
+                if query_lower in (acc.get("label") or "").lower():
+                    match = True
+                if query_lower in (acc.get("user_id") or "").lower():
+                    match = True
+                if not match:
+                    continue
+            
+            # 状态过滤
+            if status and acc.get("status") != status:
+                continue
+            
+            # 标签过滤
+            if label and acc.get("label") != label:
+                continue
+            
+            # 启用状态过滤
+            if is_active is not None and acc.get("is_active") != is_active:
+                continue
+            
+            filtered.append(acc)
+        
+        # 排序
+        reverse = sort_order.lower() == "desc"
+        if sort_by == "added_at":
+            filtered.sort(key=lambda x: x.get("added_at", ""), reverse=reverse)
+        elif sort_by == "last_used":
+            filtered.sort(key=lambda x: x.get("last_used") or "", reverse=reverse)
+        elif sort_by == "total_requests":
+            filtered.sort(key=lambda x: x.get("total_requests", 0), reverse=reverse)
+        elif sort_by == "success_count":
+            filtered.sort(key=lambda x: x.get("success_count", 0), reverse=reverse)
+        elif sort_by == "error_count":
+            filtered.sort(key=lambda x: x.get("error_count", 0), reverse=reverse)
+        elif sort_by == "avg_response_time":
+            filtered.sort(key=lambda x: x.get("avg_response_time", 0), reverse=reverse)
+        elif sort_by == "priority":
+            filtered.sort(key=lambda x: x.get("priority", 0), reverse=reverse)
+        elif sort_by == "user_name":
+            filtered.sort(key=lambda x: x.get("user_name", ""), reverse=reverse)
+        
+        # 分页
+        total = len(filtered)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged = filtered[start:end]
+        
+        # 隐藏敏感信息
+        for acc in paged:
+            if "cookie" in acc and acc["cookie"]:
+                acc["cookie"] = "***" + acc["cookie"][-8:] if len(acc["cookie"]) > 8 else "***"
+            if "token" in acc and acc["token"]:
+                acc["token"] = "***" + acc["token"][-8:] if len(acc["token"]) > 8 else "***"
+        
+        return {
+            "accounts": paged,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total + page_size - 1) // page_size
+        }
+    
+    def export_accounts(self, account_ids: List[str] = None, include_sensitive: bool = False) -> Dict:
+        """导出账号数据"""
+        with _accounts_lock:
+            if account_ids:
+                accounts = [acc for acc in _accounts_data["accounts"] if acc.get("id") in account_ids]
+            else:
+                accounts = _accounts_data["accounts"].copy()
+        
+        # 处理敏感信息
+        if not include_sensitive:
+            for acc in accounts:
+                if "cookie" in acc and acc["cookie"]:
+                    acc["cookie"] = "***" + acc["cookie"][-8:] if len(acc["cookie"]) > 8 else "***"
+                if "token" in acc and acc["token"]:
+                    acc["token"] = "***" + acc["token"][-8:] if len(acc["token"]) > 8 else "***"
+        
+        return {
+            "accounts": accounts,
+            "config": _accounts_data["config"].copy(),
+            "exported_at": datetime.now().isoformat(),
+            "count": len(accounts)
+        }
+    
+    def import_accounts(self, accounts_data: List[Dict], overwrite: bool = False) -> Dict:
+        """导入账号数据"""
+        results = {
+            "total": len(accounts_data),
+            "imported": 0,
+            "skipped": 0,
+            "failed": 0,
+            "details": []
+        }
+        
+        with _accounts_lock:
+            for i, acc_data in enumerate(accounts_data):
+                try:
+                    # 检查必填字段
+                    cookie = acc_data.get("cookie")
+                    if not cookie:
+                        results["failed"] += 1
+                        results["details"].append({"index": i + 1, "status": "failed", "reason": "缺少 cookie 字段"})
+                        continue
+                    
+                    # 检查是否已存在
+                    existing = False
+                    for acc in _accounts_data["accounts"]:
+                        if acc.get("cookie") == cookie:
+                            existing = True
+                            if overwrite:
+                                # 更新现有账号
+                                acc.update({k: v for k, v in acc_data.items() if k not in ["id", "added_at"]})
+                                results["imported"] += 1
+                                results["details"].append({"index": i + 1, "status": "updated", "account_id": acc.get("id")})
+                            else:
+                                results["skipped"] += 1
+                                results["details"].append({"index": i + 1, "status": "skipped", "reason": "账号已存在"})
+                            break
+                    
+                    if not existing:
+                        # 添加新账号
+                        account = {
+                            "id": self._generate_id(),
+                            "cookie": cookie,
+                            "token": acc_data.get("token", ""),
+                            "user_id": acc_data.get("user_id", ""),
+                            "user_name": acc_data.get("user_name", ""),
+                            "label": acc_data.get("label", ""),
+                            "is_active": acc_data.get("is_active", True),
+                            "status": acc_data.get("status", "healthy"),
+                            "priority": acc_data.get("priority", 0),
+                            "expires_at": acc_data.get("expires_at"),
+                            "added_at": acc_data.get("added_at", datetime.now().isoformat()),
+                            "last_used": acc_data.get("last_used"),
+                            "last_error": acc_data.get("last_error"),
+                            "error_count": acc_data.get("error_count", 0),
+                            "success_count": acc_data.get("success_count", 0),
+                            "total_requests": acc_data.get("total_requests", 0),
+                            "avg_response_time": acc_data.get("avg_response_time", 0),
+                            "cooldown_until": acc_data.get("cooldown_until", 0),
+                        }
+                        _accounts_data["accounts"].append(account)
+                        results["imported"] += 1
+                        results["details"].append({"index": i + 1, "status": "imported", "account_id": account["id"]})
+                
+                except Exception as e:
+                    results["failed"] += 1
+                    results["details"].append({"index": i + 1, "status": "failed", "reason": str(e)})
+            
+            self._save()
+        
+        return {"success": True, "results": results}
+    
+    def update_priority(self, account_id: str, priority: int) -> Dict:
+        """更新账号优先级"""
+        with _accounts_lock:
+            for acc in _accounts_data["accounts"]:
+                if acc.get("id") == account_id:
+                    acc["priority"] = priority
+                    self._save()
+                    return {"success": True, "priority": priority}
+            return {"success": False, "error": "账号不存在"}
+    
+    def batch_toggle(self, account_ids: List[str], is_active: bool) -> Dict:
+        """批量启用/禁用账号"""
+        updated = 0
+        with _accounts_lock:
+            for acc in _accounts_data["accounts"]:
+                if acc.get("id") in account_ids:
+                    acc["is_active"] = is_active
+                    updated += 1
+            self._save()
+        return {"success": True, "updated": updated}
+    
+    def set_expiry(self, account_id: str, expires_at: str = None) -> Dict:
+        """设置账号有效期"""
+        with _accounts_lock:
+            for acc in _accounts_data["accounts"]:
+                if acc.get("id") == account_id:
+                    acc["expires_at"] = expires_at
+                    self._save()
+                    return {"success": True, "expires_at": expires_at}
+            return {"success": False, "error": "账号不存在"}
+    
+    def reset_account_stats(self, account_id: str) -> Dict:
+        """重置单个账号统计"""
+        with _accounts_lock:
+            for acc in _accounts_data["accounts"]:
+                if acc.get("id") == account_id:
+                    acc["error_count"] = 0
+                    acc["success_count"] = 0
+                    acc["total_requests"] = 0
+                    acc["avg_response_time"] = 0
+                    acc["status"] = "healthy"
+                    acc["cooldown_until"] = 0
+                    acc["last_error"] = None
+                    self._save()
+                    return {"success": True}
+            return {"success": False, "error": "账号不存在"}
+    
+    def get_account_details(self, account_id: str) -> Dict:
+        """获取账号详细使用情况"""
+        with _accounts_lock:
+            for acc in _accounts_data["accounts"]:
+                if acc.get("id") == account_id:
+                    # 计算额外统计信息
+                    total = acc.get("total_requests", 0)
+                    success = acc.get("success_count", 0)
+                    error = acc.get("error_count", 0)
+                    
+                    details = {
+                        **acc,
+                        "success_rate": (success / total * 100) if total > 0 else 0,
+                        "error_rate": (error / total * 100) if total > 0 else 0,
+                        "is_expired": False,
+                        "days_since_added": 0,
+                        "days_since_used": None
+                    }
+                    
+                    # 检查是否过期
+                    if acc.get("expires_at"):
+                        try:
+                            expires = datetime.fromisoformat(acc["expires_at"].replace('Z', '+00:00'))
+                            details["is_expired"] = datetime.now(expires.tzinfo) > expires
+                        except:
+                            pass
+                    
+                    # 计算添加天数
+                    if acc.get("added_at"):
+                        try:
+                            added = datetime.fromisoformat(acc["added_at"].replace('Z', '+00:00'))
+                            details["days_since_added"] = (datetime.now(added.tzinfo) - added).days
+                        except:
+                            pass
+                    
+                    # 计算上次使用天数
+                    if acc.get("last_used"):
+                        try:
+                            last_used = datetime.fromisoformat(acc["last_used"].replace('Z', '+00:00'))
+                            details["days_since_used"] = (datetime.now(last_used.tzinfo) - last_used).days
+                        except:
+                            pass
+                    
+                    # 隐藏敏感信息
+                    if "cookie" in details and details["cookie"]:
+                        details["cookie"] = "***" + details["cookie"][-8:] if len(details["cookie"]) > 8 else "***"
+                    if "token" in details and details["token"]:
+                        details["token"] = "***" + details["token"][-8:] if len(details["token"]) > 8 else "***"
+                    
+                    return {"success": True, "account": details}
+            
+            return {"success": False, "error": "账号不存在"}
+    
+    def get_all_labels(self) -> List[str]:
+        """获取所有标签"""
+        with _accounts_lock:
+            labels = set()
+            for acc in _accounts_data["accounts"]:
+                label = acc.get("label")
+                if label:
+                    labels.add(label)
+            return sorted(list(labels))
+    
+    def batch_delete_by_filter(self, status: str = None, label: str = None, 
+                               is_active: bool = None, older_than_days: int = None) -> Dict:
+        """根据条件批量删除账号"""
+        deleted = 0
+        with _accounts_lock:
+            accounts_to_keep = []
+            for acc in _accounts_data["accounts"]:
+                should_delete = True
+                
+                # 状态过滤
+                if status and acc.get("status") != status:
+                    should_delete = False
+                
+                # 标签过滤
+                if label and acc.get("label") != label:
+                    should_delete = False
+                
+                # 启用状态过滤
+                if is_active is not None and acc.get("is_active") != is_active:
+                    should_delete = False
+                
+                # 时间过滤
+                if older_than_days is not None and acc.get("added_at"):
+                    try:
+                        added = datetime.fromisoformat(acc["added_at"].replace('Z', '+00:00'))
+                        if (datetime.now(added.tzinfo) - added).days <= older_than_days:
+                            should_delete = False
+                    except:
+                        should_delete = False
+                
+                if should_delete:
+                    deleted += 1
+                else:
+                    accounts_to_keep.append(acc)
+            
+            _accounts_data["accounts"] = accounts_to_keep
+            self._save()
+        
+        return {"success": True, "deleted": deleted}
 
 
 # 全局实例
@@ -770,5 +1090,220 @@ def validate_cookie():
                 "valid": False,
                 "error": "Cookie 无效或网络错误"
             })
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/search', methods=['GET', 'OPTIONS'])
+def search_accounts():
+    """搜索和过滤账号"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        query = request.args.get('query', '')
+        status = request.args.get('status')
+        label = request.args.get('label')
+        is_active_str = request.args.get('is_active')
+        sort_by = request.args.get('sort_by', 'added_at')
+        sort_order = request.args.get('sort_order', 'desc')
+        page = int(request.args.get('page', 1))
+        page_size = int(request.args.get('page_size', 20))
+        
+        is_active = None
+        if is_active_str is not None:
+            is_active = is_active_str.lower() == 'true'
+        
+        result = manager.search_accounts(
+            query=query,
+            status=status,
+            label=label,
+            is_active=is_active,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size
+        )
+        
+        return jsonify({
+            "success": True,
+            **result
+        })
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/export', methods=['GET', 'OPTIONS'])
+def export_accounts():
+    """导出账号数据"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        account_ids_str = request.args.get('ids', '')
+        include_sensitive = request.args.get('include_sensitive', 'false').lower() == 'true'
+        
+        account_ids = None
+        if account_ids_str:
+            account_ids = [id.strip() for id in account_ids_str.split(',') if id.strip()]
+        
+        result = manager.export_accounts(account_ids=account_ids, include_sensitive=include_sensitive)
+        return jsonify({
+            "success": True,
+            **result
+        })
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/import', methods=['POST', 'OPTIONS'])
+def import_accounts():
+    """导入账号数据"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        data = request.get_json(force=True, silent=True)
+        if not data or "accounts" not in data:
+            return jsonify({"error": 400, "message": "请求体必须包含 accounts 字段"}), 400
+        
+        overwrite = data.get("overwrite", False)
+        result = manager.import_accounts(data["accounts"], overwrite=overwrite)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/<account_id>/priority', methods=['PUT', 'OPTIONS'])
+def update_priority(account_id):
+    """更新账号优先级"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        data = request.get_json(force=True, silent=True)
+        if not data or "priority" not in data:
+            return jsonify({"error": 400, "message": "请求体必须包含 priority 字段"}), 400
+        
+        result = manager.update_priority(account_id, data["priority"])
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 404
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/batch/toggle', methods=['POST', 'OPTIONS'])
+def batch_toggle():
+    """批量启用/禁用账号"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        data = request.get_json(force=True, silent=True)
+        if not data or "ids" not in data or "is_active" not in data:
+            return jsonify({"error": 400, "message": "请求体必须包含 ids 和 is_active 字段"}), 400
+        
+        result = manager.batch_toggle(data["ids"], data["is_active"])
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/<account_id>/expiry', methods=['PUT', 'OPTIONS'])
+def set_expiry(account_id):
+    """设置账号有效期"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"error": 400, "message": "请求体不能为空"}), 400
+        
+        expires_at = data.get("expires_at")
+        result = manager.set_expiry(account_id, expires_at)
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 404
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/<account_id>/stats/reset', methods=['POST', 'OPTIONS'])
+def reset_account_stats(account_id):
+    """重置单个账号统计"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        result = manager.reset_account_stats(account_id)
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 404
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/<account_id>/details', methods=['GET', 'OPTIONS'])
+def get_account_details(account_id):
+    """获取账号详细使用情况"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        result = manager.get_account_details(account_id)
+        if result["success"]:
+            return jsonify(result)
+        else:
+            return jsonify(result), 404
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/labels', methods=['GET', 'OPTIONS'])
+def get_labels():
+    """获取所有标签"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        labels = manager.get_all_labels()
+        return jsonify({
+            "success": True,
+            "labels": labels
+        })
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/batch/delete', methods=['POST', 'OPTIONS'])
+def batch_delete_by_filter():
+    """根据条件批量删除账号"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        data = request.get_json(force=True, silent=True) or {}
+        
+        status = data.get("status")
+        label = data.get("label")
+        is_active_str = data.get("is_active")
+        older_than_days = data.get("older_than_days")
+        
+        is_active = None
+        if is_active_str is not None:
+            is_active = is_active_str.lower() == 'true' if isinstance(is_active_str, str) else bool(is_active_str)
+        
+        result = manager.batch_delete_by_filter(
+            status=status,
+            label=label,
+            is_active=is_active,
+            older_than_days=older_than_days
+        )
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": 500, "message": str(e)}), 500

@@ -177,6 +177,18 @@ class utils:
 		@staticmethod
 		def cookies():
 			"""获取并设置 Cookie"""
+			# 优先从 accounts.json 获取 cookie
+			if cfg.api.anon:
+				try:
+					from accounts import get_next_account
+					account = get_next_account()
+					if account and account.get("cookie"):
+						cfg.headers["Cookie"] = account["cookie"]
+						log.debug("使用账号 cookie: %s...", account["cookie"][:30])
+						return cfg.headers["Cookie"]
+				except Exception as e:
+					log.debug("从 accounts.json 获取 cookie 失败: %s", e)
+
 			if cfg.headers.get("Cookie"):
 				return cfg.headers["Cookie"]
 
@@ -208,12 +220,40 @@ class utils:
 				raise Exception(f"fetch cookie fail: {response.status_code} - {response.text}")
 
 		_user_cache = {}
+		_current_account = None
 		@staticmethod
 		def user():
 			headers = {
 				**cfg.headers,
 				"Content-Type": "application/json"
 			}
+			
+			# 优先从 accounts.json 获取 token
+			if cfg.api.anon:
+				try:
+					from accounts import get_next_account
+					account = get_next_account()
+					if account and account.get("token"):
+						current_token = account["token"]
+						userId = account.get("user_id")
+						userName = account.get("user_name")
+						
+						if current_token in utils.request._user_cache:
+							cached = utils.request._user_cache[current_token]
+							log.debug("用户信息[账号缓存]: id=%s, token=%s...", cached.get("id"), current_token[:50])
+							return {"id": cached.get("id"), "token": current_token}
+						
+						if userId:
+							utils.request._user_cache[current_token] = {
+								"id": userId,
+								"name": userName
+							}
+						
+						log.debug("用户信息[账号]: name=%s, id=%s, token=%s...", userName, userId, current_token[:50] if current_token else None)
+						return {"id": userId, "token": current_token}
+				except Exception as e:
+					log.debug("从 accounts.json 获取 token 失败: %s", e)
+			
 			current_token = None if cfg.api.anon else cfg.source.token
 
 			if current_token and current_token in utils.request._user_cache:
