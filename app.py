@@ -228,29 +228,40 @@ class utils:
 				"Content-Type": "application/json"
 			}
 			
-			# 优先从 accounts.json 获取 token
+			# 优先从 accounts.json 获取 token（用 cookie 刷新 token）
 			if cfg.api.anon:
 				try:
 					from accounts import get_next_account
 					account = get_next_account()
-					if account and account.get("token"):
-						current_token = account["token"]
-						userId = account.get("user_id")
-						userName = account.get("user_name")
-						
-						if current_token in utils.request._user_cache:
-							cached = utils.request._user_cache[current_token]
-							log.debug("用户信息[账号缓存]: id=%s, token=%s...", cached.get("id"), current_token[:50])
-							return {"id": cached.get("id"), "token": current_token}
-						
-						if userId:
-							utils.request._user_cache[current_token] = {
-								"id": userId,
-								"name": userName
-							}
-						
-						log.debug("用户信息[账号]: name=%s, id=%s, token=%s...", userName, userId, current_token[:50] if current_token else None)
-						return {"id": userId, "token": current_token}
+					if account and account.get("cookie"):
+						cookie = account["cookie"]
+						acc_headers = {
+							**cfg.headers,
+							"Content-Type": "application/json",
+							"Cookie": cookie
+						}
+						auth_resp = requests.get(f"{cfg.source.protocol}//{cfg.source.host}/api/v1/auths/", headers=acc_headers)
+						if auth_resp.status_code == 200:
+							data = auth_resp.json()
+							current_token = data.get("token", "")
+							userId = data.get("id")
+							userName = data.get("name")
+							
+							if current_token in utils.request._user_cache:
+								cached = utils.request._user_cache[current_token]
+								log.debug("用户信息[账号缓存]: id=%s, token=%s...", cached.get("id"), current_token[:50])
+								return {"id": cached.get("id"), "token": current_token}
+							
+							if current_token and userId:
+								utils.request._user_cache[current_token] = {
+									"id": userId,
+									"name": userName
+								}
+							
+							log.info("用户信息[账号]: name=%s, id=%s, token=%s...", userName, userId, current_token[:50] if current_token else None)
+							return {"id": userId, "token": current_token}
+						else:
+							log.debug("账号 cookie 验证失败: %s", auth_resp.status_code)
 				except Exception as e:
 					log.debug("从 accounts.json 获取 token 失败: %s", e)
 			
@@ -1304,14 +1315,15 @@ if __name__ == "__main__":
 	log.info("基于 https://github.com/kbykb/OpenAI-Compatible-API-Proxy-for-Z 重构")
 	log.info("---------------------------------------------------------------------")
 	log.info("请稍后，正在检查网络……")
+	
+	# 初始化账号管理器（必须在 models/cookies 之前）
+	accounts_manager = init_accounts()
+	
 	models = utils.request.models()
 	cookies = utils.request.cookies()
 	
 	# 初始化设置管理器
 	settings_manager = init_settings(cfg)
-	
-	# 初始化账号管理器
-	accounts_manager = init_accounts()
 	
 	log.info("---------------------------------------------------------------------")
 	log.info(f"Base           {cfg.source.protocol}//{cfg.source.host}")

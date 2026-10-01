@@ -763,16 +763,116 @@ class AccountManager:
             self._save()
         
         return {"success": True, "deleted": deleted}
+    
+    def refresh_all_cookies(self) -> Dict:
+        """刷新所有账号的 cookie 和 token"""
+        results = {"total": 0, "success": 0, "failed": 0, "details": []}
+        
+        with _accounts_lock:
+            accounts_to_refresh = [acc for acc in _accounts_data["accounts"] if acc.get("is_active", True)]
+        
+        results["total"] = len(accounts_to_refresh)
+        
+        for acc in accounts_to_refresh:
+            cookie = acc.get("cookie", "")
+            if not cookie:
+                results["failed"] += 1
+                results["details"].append({
+                    "id": acc.get("id"),
+                    "user_name": acc.get("user_name"),
+                    "status": "no_cookie"
+                })
+                continue
+            
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Cookie": cookie,
+                    "Accept": "*/*",
+                    "X-FE-Version": "prod-fe-1.0.111",
+                }
+                r = requests.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("id") and data.get("name"):
+                        with _accounts_lock:
+                            acc["token"] = data.get("token", "")
+                            acc["user_id"] = data["id"]
+                            acc["user_name"] = data["name"]
+                            acc["status"] = "healthy"
+                        results["success"] += 1
+                        results["details"].append({
+                            "id": acc.get("id"),
+                            "user_name": acc.get("user_name"),
+                            "status": "refreshed"
+                        })
+                        log.info("Cookie 刷新成功: %s (%s)", acc.get("user_name"), acc.get("id"))
+                    else:
+                        with _accounts_lock:
+                            acc["status"] = "unhealthy"
+                        results["failed"] += 1
+                        results["details"].append({
+                            "id": acc.get("id"),
+                            "user_name": acc.get("user_name"),
+                            "status": "invalid_response"
+                        })
+                else:
+                    with _accounts_lock:
+                        acc["status"] = "unhealthy"
+                    results["failed"] += 1
+                    results["details"].append({
+                        "id": acc.get("id"),
+                        "user_name": acc.get("user_name"),
+                        "status": f"http_{r.status_code}"
+                    })
+            except Exception as e:
+                with _accounts_lock:
+                    acc["status"] = "unhealthy"
+                results["failed"] += 1
+                results["details"].append({
+                    "id": acc.get("id"),
+                    "user_name": acc.get("user_name"),
+                    "status": "error",
+                    "error": str(e)
+                })
+                log.error("Cookie 刷新失败: %s (%s) - %s", acc.get("user_name"), acc.get("id"), e)
+        
+        with _accounts_lock:
+            self._save()
+        
+        log.info("Cookie 批量刷新完成: 成功 %d/%d", results["success"], results["total"])
+        return {"success": True, "results": results}
 
 
 # 全局实例
 _manager: Optional[AccountManager] = None
+_refresh_thread: Optional[threading.Thread] = None
+_refresh_interval = 300  # 5分钟刷新一次
+
+
+def _refresh_loop():
+    """后台定时刷新 cookie 的线程"""
+    while True:
+        time.sleep(_refresh_interval)
+        try:
+            if _manager:
+                log.info("开始定时刷新所有账号 cookie...")
+                _manager.refresh_all_cookies()
+        except Exception as e:
+            log.error("定时刷新 cookie 失败: %s", e)
 
 
 def init_accounts():
     """初始化账号管理器"""
-    global _manager
+    global _manager, _refresh_thread
     _manager = AccountManager()
+    
+    # 启动后台刷新线程
+    if _refresh_thread is None or not _refresh_thread.is_alive():
+        _refresh_thread = threading.Thread(target=_refresh_loop, daemon=True)
+        _refresh_thread.start()
+        log.info("Cookie 定时刷新线程已启动 (间隔: %d 秒)", _refresh_interval)
+    
     return _manager
 
 
@@ -1090,6 +1190,19 @@ def validate_cookie():
                 "valid": False,
                 "error": "Cookie 无效或网络错误"
             })
+    except Exception as e:
+        return jsonify({"error": 500, "message": str(e)}), 500
+
+
+@accounts_bp.route('/refresh', methods=['POST', 'OPTIONS'])
+def refresh_cookies():
+    """手动刷新所有账号的 Cookie"""
+    if request.method == 'OPTIONS':
+        return make_response()
+    try:
+        manager = get_manager()
+        result = manager.refresh_all_cookies()
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": 500, "message": str(e)}), 500
 
